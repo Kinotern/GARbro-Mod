@@ -1,46 +1,25 @@
-name: Build GARbro-Mod (x64 Debug+Release)
-
-on:
-  push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
-
+name: .NET Framework Build
+on: [push, pull_request]
 jobs:
   build:
     runs-on: windows-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        configuration: [Debug, Release]
-
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@v2
-
-    - name: Setup NuGet
-      uses: NuGet/setup-nuget@v2
-
-    - name: Restore NuGet packages
-      run: nuget restore GARbro.sln
-
-    - name: Build (x64)
-      run: msbuild GARbro.sln /m /v:minimal /p:Configuration=${{ matrix.configuration }} /p:Platform="x64"
-
-    # 打印实际输出目录，方便排错（保留也没关系）
-    - name: List outputs
-      if: always()
-      run: dir GARbro.GUI\bin -Recurse
-
-    # 兼容不同输出目录结构：bin\x64\Debug / bin\x64\Release 等
-    - name: Upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: GARbro-${{ matrix.configuration }}-x64
-        path: |
-          GARbro.GUI\bin\**\${{ matrix.configuration }}\**
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+      # Restore NuGet packages
+      - name: Restore
+        run: nuget restore
+      # Build the solution
+      - name: Build
+        run: msbuild /p:Configuration=Release /p:Platform="Any CPU" GARbro.sln
+      # Publish the artifacts
+      - name: Publish Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GARbro-Mod-ci-build
+          path: bin/Release
