@@ -1,11 +1,9 @@
-﻿﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Runtime.Remoting.Metadata.W3cXsd2001;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace SchemeTool
 {
@@ -13,75 +11,118 @@ namespace SchemeTool
     {
         static void Main(string[] args)
         {
-            // Load database
-            using (Stream stream = File.OpenRead(".\\GameData\\Formats.dat"))
+            string gameTitle = "TenShiSouZou";
+            string exeName = "tenshi_sz.exe";
+
+            string formatPath = @".\GameData\Formats.dat";
+            string controlBlockFile = "LLLJ.bin";
+            string namesFile = "HxNames-Tenshi.lst";
+
+            // 1. Load existing Formats.dat
+            using (Stream stream = File.OpenRead(formatPath))
             {
                 GameRes.FormatCatalog.Instance.DeserializeScheme(stream);
             }
-#if false
-            using (Stream stream = File.Create(".\\GameData\\Formats.json"))
+
+            // 2. Find XP3 opener
+            var format = GameRes.FormatCatalog.Instance.ArcFormats
+                .FirstOrDefault(a => a is GameRes.Formats.KiriKiri.Xp3Opener)
+                as GameRes.Formats.KiriKiri.Xp3Opener;
+
+            if (format == null)
             {
-                GameRes.FormatCatalog.Instance.SerializeSchemeJson(stream);
+                Console.WriteLine("Xp3Opener not found.");
                 return;
             }
-#endif
-            GameRes.Formats.KiriKiri.Xp3Opener format = GameRes.FormatCatalog.Instance.ArcFormats
-                .FirstOrDefault(a => a is GameRes.Formats.KiriKiri.Xp3Opener) as GameRes.Formats.KiriKiri.Xp3Opener;
 
-            if (format != null)
+            var scheme = format.Scheme as GameRes.Formats.KiriKiri.Xp3Scheme;
+            if (scheme == null)
             {
-                GameRes.Formats.KiriKiri.Xp3Scheme scheme = format.Scheme as GameRes.Formats.KiriKiri.Xp3Scheme;
-
-                // Add scheme information here
-
-#if true
-                byte[] cb = File.ReadAllBytes(@"MEM_10014628_00001000.mem");
-                var cb2 = MemoryMarshal.Cast<byte, uint>(cb);
-                for (int i = 0; i < cb2.Length; i++)
-                    cb2[i] = ~cb2[i];
-                var cs = new GameRes.Formats.KiriKiri.CxScheme
-                {
-                    Mask = 0x000,
-                    Offset = 0x000,
-                    PrologOrder = new byte[] { 0, 1, 2 },
-                    OddBranchOrder = new byte[] { 0, 1, 2, 3, 4, 5 },
-                    EvenBranchOrder = new byte[] { 0, 1, 2, 3, 4, 5, 6, 7 },
-                    ControlBlock = cb2.ToArray()
-                };
-                var crypt = new GameRes.Formats.KiriKiri.HxCrypt(cs);
-                crypt.RandomType = 0;
-                crypt.FilterKey = 0x0000000000000000;
-                crypt.NamesFile = "HxNames.lst";
-                var keyA1 = SoapHexBinary.Parse("0000000000000000000000000000000000000000000000000000000000000000").Value;
-                var keyA2 = SoapHexBinary.Parse("00000000000000000000000000000000").Value;
-                var keyB1 = SoapHexBinary.Parse("0000000000000000000000000000000000000000000000000000000000000000").Value;
-                var keyB2 = SoapHexBinary.Parse("00000000000000000000000000000000").Value;
-                crypt.IndexKeyDict = new Dictionary<string, GameRes.Formats.KiriKiri.HxIndexKey>()
-                {
-                    { "data.xp3", new GameRes.Formats.KiriKiri.HxIndexKey { Key1 = keyA1, Key2 = keyA2 } },
-                    { "update.xp3", new GameRes.Formats.KiriKiri.HxIndexKey { Key1 = keyB1, Key2 = keyB2 } },
-                };
-#else
-                GameRes.Formats.KiriKiri.ICrypt crypt = new GameRes.Formats.KiriKiri.XorCrypt(0x00);
-#endif
-
-                // scheme.KnownSchemes.Add("game title", crypt);
+                Console.WriteLine("Xp3Scheme not found.");
+                return;
             }
 
-            var gameMap = typeof(GameRes.FormatCatalog).GetField("m_game_map", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-                .GetValue(GameRes.FormatCatalog.Instance) as Dictionary<string, string>;
+            // 3. Load ControlBlock
+            if (!File.Exists(controlBlockFile))
+            {
+                Console.WriteLine("LLLJ.bin not found.");
+                return;
+            }
+
+            byte[] cb = File.ReadAllBytes(controlBlockFile);
+
+            if (cb.Length % 4 != 0)
+            {
+                Console.WriteLine("ControlBlock size invalid.");
+                return;
+            }
+
+            uint[] controlBlock = new uint[cb.Length / 4];
+            Buffer.BlockCopy(cb, 0, controlBlock, 0, cb.Length);
+
+            // 4. Build CxScheme using Frida parameters
+            var cs = new GameRes.Formats.KiriKiri.CxScheme
+            {
+                Mask = 0x1dc,
+                Offset = 0x295,
+                PrologOrder = new byte[] { 0, 2, 1 },
+                OddBranchOrder = new byte[] { 4, 1, 0, 3, 5, 2 },
+                EvenBranchOrder = new byte[] { 3, 4, 1, 2, 6, 0, 7, 5 },
+                ControlBlock = controlBlock
+            };
+
+            // 5. Build HxCrypt
+            var crypt = new GameRes.Formats.KiriKiri.HxCrypt(cs)
+            {
+                RandomType = 1,
+                FilterKey = 0xb9ac287fb5e05f0d,
+                NamesFile = namesFile
+            };
+
+            // 6. Set IndexKey (Frida captured)
+            byte[] key = SoapHexBinary.Parse(
+                "724dc481e71024c53ed9ee2a1674f39caec40e0d55ffb11e60fe6e1f7dcc4128"
+            ).Value;
+
+            byte[] nonce = SoapHexBinary.Parse(
+                "522f20d0a8e442e85a1e8b4dead28da3"
+            ).Value;
+
+            crypt.IndexKeyDict = new Dictionary<string, GameRes.Formats.KiriKiri.HxIndexKey>()
+            {
+                {
+                    "data.xp3",
+                    new GameRes.Formats.KiriKiri.HxIndexKey
+                    {
+                        Key1 = key,
+                        Key2 = nonce
+                    }
+                }
+            };
+
+            // 7. Register scheme
+            if (!scheme.KnownSchemes.ContainsKey(gameTitle))
+                scheme.KnownSchemes.Add(gameTitle, crypt);
+            else
+                scheme.KnownSchemes[gameTitle] = crypt;
+
+            // 8. Bind exe to scheme
+            var gameMapField = typeof(GameRes.FormatCatalog)
+                .GetField("m_game_map", BindingFlags.Instance | BindingFlags.NonPublic);
+
+            var gameMap = gameMapField.GetValue(GameRes.FormatCatalog.Instance)
+                as Dictionary<string, string>;
 
             if (gameMap != null)
-            {
-                // Add file name here
-                // gameMap.Add("game.exe", "game title");
-            }
+                gameMap[exeName] = gameTitle;
 
-            // Save database
-            using (Stream stream = File.Create(".\\GameData\\Formats.dat"))
+            // 9. Save back to Formats.dat
+            using (Stream stream = File.Create(formatPath))
             {
                 GameRes.FormatCatalog.Instance.SerializeScheme(stream);
             }
+
+            Console.WriteLine("TenShiSouZou scheme successfully added.");
         }
     }
 }
